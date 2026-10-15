@@ -1,0 +1,102 @@
+name: Issue 10856 cloud validation
+
+on:
+  push:
+    branches: [ci/10856-cloud-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-10856-cloud-validation
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'Q-xuan/pi'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout the exact contribution commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: c6c5649eb55b037b980b1bf1da66d20e81455db6
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Record source and runner
+        run: |
+          mkdir -p .artifacts/10856
+          {
+            git rev-parse HEAD
+            node --version
+            npm --version
+            git --version
+            rustc --version
+            cargo --version
+            free -h
+            printf '\nCPU allowance: '
+            node -p 'require("node:os").availableParallelism()'
+          } | tee .artifacts/10856/environment.log
+          {
+            printf '## Issue #10856 validation\n\n'
+            printf 'Contribution commit: `%s`\n\n' "$(git rev-parse HEAD)"
+            printf 'Full tests use an isolated home with no API credentials and at most two CPUs.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install system dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+      - name: Install dependencies without lifecycle scripts
+        timeout-minutes: 10
+        run: npm ci --ignore-scripts 2>&1 | tee .artifacts/10856/install.log
+
+      - name: Build packages
+        timeout-minutes: 12
+        run: npm run build 2>&1 | tee .artifacts/10856/build.log
+
+      - name: Check formatting, types, dependencies and browser bundles
+        timeout-minutes: 8
+        run: |
+          npm run check 2>&1 | tee .artifacts/10856/check.log
+          git diff --exit-code
+
+      - name: Build the pi-env test daemon
+        timeout-minutes: 10
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: npm run build:daemon --workspace packages/env 2>&1 | tee .artifacts/10856/daemon.log
+
+      - name: Run all non-credentialed tests with bounded parallelism
+        timeout-minutes: 30
+        run: |
+          cpus="$(node -p 'Math.min(2, require("node:os").availableParallelism())')"
+          taskset -c "0-$((cpus - 1))" ./test.sh 2>&1 | tee .artifacts/10856/test.log
+
+      - name: Record final source diff
+        if: always()
+        run: |
+          git status --short | tee .artifacts/10856/status.log
+          git diff --stat | tee .artifacts/10856/diff.log
+          printf '\nRunner result: **%s**. See the step logs and the verification-logs artifact.\n' '${{ job.status }}' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-10856-verification-logs
+          path: .artifacts/10856/
+          if-no-files-found: warn
+          retention-days: 7

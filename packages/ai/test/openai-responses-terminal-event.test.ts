@@ -331,6 +331,38 @@ describe("OpenAI Responses terminal event handling", () => {
 		expect(result.errorMessage).toBe("OpenAI Responses stream ended before a terminal response event");
 	});
 
+	// Regression: https://github.com/earendil-works/pi/issues/10856
+	it("reports cancellation instead of premature EOF when an aborted wrapper stream ends quietly", async () => {
+		const model = createModel();
+		const context = normalizeContext({
+			systemPrompt: "",
+			messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 }],
+			tools: [],
+		});
+		const controller = new AbortController();
+		const stream = streamOpenAIResponses(model, context, {
+			apiKey: "test",
+			signal: controller.signal,
+			onProviderStreamEvent: (event) => {
+				if ((event as ResponseStreamEvent).type === "response.reasoning_text.delta") {
+					controller.abort();
+				}
+			},
+		});
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) events.push(event);
+
+		const result = await stream.result();
+		expect(result.stopReason).toBe("aborted");
+		expect(result.errorMessage).toBe("Request was aborted");
+		expect(result.content).toEqual([
+			{ type: "thinking", thinking: "partial reasoning before the wrapper stream ends" },
+		]);
+		expect(events.some((event) => event.type === "thinking_delta")).toBe(true);
+		expect(events.some((event) => event.type === "done")).toBe(false);
+		expect(events.at(-1)).toMatchObject({ type: "error", reason: "aborted", error: result });
+	});
+
 	it.each([
 		{ phases: ["commentary", "commentary"], expected: ["pending", "pending"] },
 		{ phases: ["final_answer", "final_answer"], expected: ["stop", "stop"] },

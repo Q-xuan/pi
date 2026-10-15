@@ -248,10 +248,13 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				delete (block as { customInput?: unknown }).customInput;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			const errorMessage = formatProviderError(
-				normalizeProviderError(error),
-				`${model.provider === "openai" ? "OpenAI" : model.provider} API error`,
-			);
+			const errorMessage =
+				output.stopReason === "aborted"
+					? "Request was aborted"
+					: formatProviderError(
+							normalizeProviderError(error),
+							`${model.provider === "openai" ? "OpenAI" : model.provider} API error`,
+						);
 			// Sign in with ChatGPT shares the subscription's usage limit with other apps.
 			output.errorMessage = errorMessage.includes("subscription_sharing_usage_limit_exceeded")
 				? `${errorMessage}\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
